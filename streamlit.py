@@ -1,5 +1,5 @@
 # Required packages - install with:
-# pip install streamlit langchain openai faiss-cpu pandas python-dotenv groq
+# pip install streamlit langchain langchain-community faiss-cpu pandas python-dotenv groq langchain-groq sentence-transformers
 
 import streamlit as st
 import pandas as pd
@@ -14,24 +14,12 @@ from typing import List, Dict, Any
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.prompts import PromptTemplate
-from langchain.vectorstores import FAISS
-from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
-from langchain.tools.tavily_search import TavilySearchResults
-
-# LLM imports (supporting multiple providers)
-try:
-    from langchain.chat_models import ChatOpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
-try:
-    from langchain_groq import ChatGroq
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
 
 # Initialize session state
 if "chat_history" not in st.session_state:
@@ -73,41 +61,34 @@ st.markdown("Upload your data and chat with an AI assistant that understands you
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # API Key selection
-    provider = st.selectbox(
-        "Choose LLM Provider",
-        ["OpenAI", "Groq"],
-        help="Select your preferred language model provider"
+    # Get API key from secrets/env or user input
+    default_groq_key = get_api_key("GROQ_API_KEY")
+    api_key = st.text_input(
+        "Groq API Key", 
+        value=default_groq_key,
+        type="password",
+        help="Enter your Groq API key (should start with 'gsk_')"
     )
     
-    if provider == "OpenAI":
-        # Get API key from secrets/env or user input
-        default_openai_key = get_api_key("OPENAI_API_KEY")
-        api_key = st.text_input(
-            "OpenAI API Key",
-            value=default_openai_key,
-            type="password",
-            help="Enter your OpenAI API key"
-        )
-        model_name = st.selectbox(
-            "Model",
-            ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-            index=0
-        )
-    else:  # Groq
-        # Get API key from secrets/env or user input
-        default_groq_key = get_api_key("GROQ_API_KEY")
-        api_key = st.text_input(
-            "Groq API Key", 
-            value=default_groq_key,
-            type="password",
-            help="Enter your Groq API key"
-        )
-        model_name = st.selectbox(
-            "Model",
-            ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"],
-            index=0
-        )
+    # Validate Groq API key format
+    if api_key and not api_key.startswith('gsk_'):
+        st.warning("⚠️ Groq API key should start with 'gsk_'")
+    
+    model_name = st.selectbox(
+        "Model",
+        [
+            "mixtral-8x7b-32768",  # Most capable model
+            "llama2-70b-4096"      # Alternative model
+        ],
+        index=0,
+        help="Select a Groq model - mixtral-8x7b-32768 is recommended"
+    )
+    
+    # Show model information
+    if model_name == "mixtral-8x7b-32768":
+        st.info("ℹ️ Mixtral 8x7B: Best for complex tasks, faster responses")
+    else:
+        st.info("ℹ️ LLaMA 2 70B: Good for general purpose use")
     
     # Tavily web search integration
     st.markdown("---")
@@ -177,7 +158,7 @@ def process_uploaded_file(file):
         return None
 
 def create_vectorstore(text_content):
-    """Create FAISS vectorstore from text content"""
+    """Create FAISS vectorstore from text content using HuggingFace embeddings"""
     # Split text into chunks
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -189,75 +170,33 @@ def create_vectorstore(text_content):
     documents = [Document(page_content=text_content)]
     chunks = text_splitter.split_documents(documents)
     
-    # Create embeddings (using OpenAI embeddings as default)
-    embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+    # Create embeddings using a free HuggingFace model
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     
     # Create vectorstore
     vectorstore = FAISS.from_documents(chunks, embeddings)
     return vectorstore
 
-def initialize_chatbot(api_key, provider, model_name, retriever):
+def initialize_chatbot(api_key, model_name, retriever):
     """Initialize the chatbot chain"""
-    # Create LLM based on provider
-    if provider == "OpenAI":
-        llm = ChatOpenAI(
-            temperature=0.3,
-            model_name=model_name,
-            openai_api_key=api_key
-        )
-    else:  # Groq
+    try:
+        # Add debug information
+        st.info(f"Initializing Groq with model: {model_name}")
+        
+        # Ensure API key starts with 'gsk_'
+        if not api_key.startswith('gsk_'):
+            st.error("Invalid Groq API key format. It should start with 'gsk_'")
+            raise ValueError("Invalid Groq API key format")
+        
         llm = ChatGroq(
             temperature=0.3,
             model_name=model_name,
             groq_api_key=api_key
         )
-    
-    # Create the prompt template
-    cot_rag_prompt = PromptTemplate.from_template("""
-Role: You are an AI data pod assistant. Your job is to summarize the user's data pod with a focus on their preferences, product warranty periods, and repair logs. 
-Your style is friendly, direct, and focused on essential information.
-
-Task: When the user asks for recommendations or information about their data, use retrieval augmented generation to find relevant information in retriever and produce a simple insight.
-
-Input: The user's inquiry about their data pod.
-
-Output: Share only the key information from the data pod. Make your summary and insights concise and friendly. Avoid technical jargon. Use very simple language so anyone can understand, with no more than 200 words.
-
-Constraints: Complete sentences and grammar are not needed. Skip background details and extra explanations.
-
-Your responsibilities:
-1. Identify and associate relevant categories from user data (e.g., "exercise" may map to the "activity" or "health" category).
-2. Clearly explain what parts of the response come from the user's data versus retrieved external knowledge.
-3. Structure your reasoning step by step—this includes data interpretation, relevance matching, and final recommendation.
-4. Minimize hallucinations by citing evidence from the context and showing how conclusions are derived.
-
----
-
-Context (from memory and knowledge base):
-{context}
-
-Question:
-{question}
-
----
-
-Now follow these steps before you answer:
-
-Step 1: Parse the user's intent. Identify what the user is asking for and any implied category of data (e.g., "exercise" = activity logs; "vacation" = preferences + calendar).
-
-Step 2: Retrieve relevant attributes from the user's Data Pod or memory. List key variables (e.g., weekly exercise frequency, budget, product usage history).
-
-Step 3: Review any retrieved documents and match them against the user's situation. Note overlap in keywords, use cases, or product descriptions.
-
-Step 4: Clearly explain how the insight or recommendation is formed using:
-- a) specific user data
-- b) supporting info from the knowledge base
-- c) simple and traceable logic
-
-Step 5: Provide your final answer to the user in a friendly, clear tone. Avoid overgeneralization.
-
-Let's reason through this step by step.
-""")
+        st.success("Groq initialization successful!")
+    except Exception as e:
+        st.error(f"Error initializing Groq: {str(e)}")
+        raise e
     
     # Memory setup
     memory = ConversationBufferMemory(
@@ -303,7 +242,7 @@ if uploaded_file and api_key:
                 st.session_state.retriever = retriever
                 
                 # Initialize chatbot
-                chatbot_chain, memory = initialize_chatbot(api_key, provider, model_name, retriever)
+                chatbot_chain, memory = initialize_chatbot(api_key, model_name, retriever)
                 st.session_state.chatbot_chain = chatbot_chain
                 st.session_state.memory = memory
                 
@@ -376,7 +315,7 @@ if st.session_state.chatbot_chain:
                         bot_response=response,
                         response_time=response_time,
                         source_documents=result.get("source_documents", []),
-                        model_used=f"{provider.lower()}_{model_name}"
+                        model_used=f"{model_name}"
                     )
                     
                     # Show retrieval info
