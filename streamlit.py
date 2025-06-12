@@ -264,7 +264,7 @@ if st.session_state.chatbot_chain:
                 st.write(message.content)
     
     # Chat input
-    if prompt := st.chat_input("Ask something about your data..."):
+    if prompt := st.chat_input("Need suggestions? Try: ‘Recommend shoes based on my activity pattern."):
         # Display user message
         with st.chat_message("user"):
             st.write(prompt)
