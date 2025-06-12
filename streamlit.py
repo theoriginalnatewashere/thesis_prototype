@@ -74,21 +74,11 @@ with st.sidebar:
     if api_key and not api_key.startswith('gsk_'):
         st.warning("⚠️ Groq API key should start with 'gsk_'")
     
-    model_name = st.selectbox(
-        "Model",
-        [
-            "mixtral-8x7b-32768",  # Most capable model
-            "llama2-70b-4096"      # Alternative model
-        ],
-        index=0,
-        help="Select a Groq model - mixtral-8x7b-32768 is recommended"
-    )
+    # Set model name directly without selection
+    model_name = "llama-3.1-8b-instant"
     
     # Show model information
-    if model_name == "mixtral-8x7b-32768":
-        st.info("ℹ️ Mixtral 8x7B: Best for complex tasks, faster responses")
-    else:
-        st.info("ℹ️ LLaMA 2 70B: Good for general purpose use")
+    st.info("ℹ️ Using Llama 3.1 8B: High-speed model (~750 tokens/sec) optimized for real-time responses")
     
     # Tavily web search integration
     st.markdown("---")
